@@ -211,3 +211,36 @@ def plot_equity_curves(curves: dict[str, pd.Series], title: str):
     ax.set_title(title)
     ax.legend(frameon=False, fontsize=9, loc="upper left")
     return _save(fig, "pairs_equity_curves.png")
+
+
+# ---------------------------------------------------------------------------
+# Rates & Credit charts
+# ---------------------------------------------------------------------------
+def plot_price_yield(y0: float, coupon: float, maturity: float, freq: int, price_fn, dmod: float,
+                     cx: float, compare: dict[str, np.ndarray], yields_cmp: np.ndarray):
+    """Left: exact price-yield curve vs duration line vs duration+convexity parabola.
+    Right: price-yield curves of bonds with different maturities (convexity grows with maturity)."""
+    ys = np.linspace(y0 - 0.04, y0 + 0.04, 161)
+    p0 = price_fn(y0)
+    exact = np.array([price_fn(v) for v in ys])
+    dur = p0 * (1 - dmod * (ys - y0))
+    dcx = p0 * (1 - dmod * (ys - y0) + 0.5 * cx * (ys - y0) ** 2)
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 4.6))
+    a1.plot(ys * 100, exact, color=SERIES[0], lw=2.2, label="Exact price")
+    a1.plot(ys * 100, dur, color=SERIES[1], ls="--", label="Duration only (tangent line)")
+    a1.plot(ys * 100, dcx, color=SERIES[2], ls=":", lw=2, label="Duration + convexity")
+    for dy in (-0.01, 0.01):
+        a1.axvline((y0 + dy) * 100, color=GRID, lw=1)
+    a1.scatter([y0 * 100], [p0], color=INK, s=30, zorder=5)
+    a1.set_xlabel("Yield (%)")
+    a1.set_ylabel("Price per 100 face")
+    a1.set_title(f"{maturity:g}-year {coupon:.2%} bond: price vs yield")
+    a1.legend(frameon=False, fontsize=9)
+    for i, (lab, prices) in enumerate(compare.items()):
+        a2.plot(yields_cmp * 100, prices, color=SERIES[i], lw=2, label=lab)
+    a2.set_xlabel("Yield (%)")
+    a2.set_ylabel("Price per 100 face")
+    a2.set_title("Longer bonds: steeper (duration) and more curved (convexity)")
+    a2.legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    return _save(fig, "bond_price_yield.png")
