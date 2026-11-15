@@ -88,3 +88,126 @@ def plot_drawdowns(prices: pd.DataFrame, cols: list[str]):
     ax.set_title("Drawdowns")
     ax.legend(frameon=False, fontsize=8)
     return _save(fig, "drawdowns.png")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 charts
+# ---------------------------------------------------------------------------
+def plot_mc_convergence(rows: list[dict]):
+    df = pd.DataFrame(rows)
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.loglog(df["paths"], df["mean_abs_error"], "o-", color=SERIES[0], ms=6,
+              label="Mean |MC - Black-Scholes| (20 seeds)")
+    ax.loglog(df["paths"], df["mean_std_error"], "s--", color=SERIES[1], ms=5,
+              label="Average standard error")
+    ref = df["mean_abs_error"].iloc[0] * np.sqrt(df["paths"].iloc[0] / df["paths"])
+    ax.loglog(df["paths"], ref, color=INK_2, lw=1, ls=":", label="1/sqrt(N) reference")
+    ax.set_xlabel("Number of simulated paths (log scale)")
+    ax.set_ylabel("Pricing error (log scale)")
+    ax.set_title("Monte Carlo converges to Black-Scholes at rate 1/sqrt(N)")
+    ax.legend(frameon=False, fontsize=9)
+    return _save(fig, "mc_convergence.png")
+
+
+def plot_greeks_vs_spot(greeks_by_T: dict, spots: np.ndarray, K: float):
+    names = ["price", "delta", "gamma", "vega", "theta", "rho"]
+    titles = ["Call price", "Delta", "Gamma", "Vega (per vol pt)", "Theta (per day)", "Rho (per 1%)"]
+    fig, axes = plt.subplots(2, 3, figsize=(12, 6.5), sharex=True)
+    for ax, n, t in zip(axes.flat, names, titles):
+        for i, (T, g) in enumerate(greeks_by_T.items()):
+            ax.plot(spots, g[n], color=SERIES[i], label=f"T = {T:g} yr")
+        ax.axvline(K, color=INK_2, lw=0.8, ls="--")
+        ax.set_title(t, fontsize=11)
+    for ax in axes[1]:
+        ax.set_xlabel("Spot price (strike = 100)")
+    axes[0, 0].legend(frameon=False, fontsize=8)
+    fig.suptitle("Black-Scholes call Greeks vs spot, for three maturities", x=0.01, ha="left",
+                 fontweight="bold", fontsize=13)
+    fig.tight_layout()
+    return _save(fig, "greeks_vs_spot.png")
+
+
+def plot_iv_smile(smile: pd.DataFrame, expiry: str, quote_date: str, ticker: str):
+    fig, ax = plt.subplots(figsize=(8.5, 4.5))
+    for i, kind in enumerate(["put", "call"]):
+        d = smile[smile["type"] == kind]
+        ax.plot(d["moneyness"], d["iv"] * 100, "o", ms=4, color=SERIES[i],
+                label=f"OTM {kind}s (our solver)")
+    ax.plot(smile["moneyness"], smile["impliedVolatility"] * 100, color=INK_2, lw=1, ls="--",
+            label="Yahoo's quoted IV")
+    ax.axvline(1.0, color=INK_2, lw=0.8)
+    ax.set_xlabel("Moneyness  K / Forward")
+    ax.set_ylabel("Implied volatility (%)")
+    ax.set_title(f"{ticker} implied-volatility skew - expiry {expiry}, quotes {quote_date}")
+    ax.legend(frameon=False, fontsize=9)
+    return _save(fig, "iv_smile.png")
+
+
+def plot_delta_hedge_real(detail: pd.DataFrame, K: float, title: str):
+    fig, (a1, a2, a3) = plt.subplots(3, 1, figsize=(9, 8), sharex=True,
+                                     gridspec_kw={"height_ratios": [2, 1.2, 1.5]})
+    a1.plot(detail.index, detail["S"], color=SERIES[0])
+    a1.axhline(K, color=INK_2, ls="--", lw=1)
+    a1.text(detail.index[0], K, " strike", va="bottom", color=INK_2, fontsize=9)
+    a1.set_ylabel("NIFTY 50")
+    a1.set_title(title)
+    a2.plot(detail.index, detail["delta"], color=SERIES[2])
+    a2.set_ylabel("Hedge delta")
+    a2.set_ylim(-0.02, 1.02)
+    a3.plot(detail.index, detail["book_pnl"], color=SERIES[1], label="Hedged book P&L (actual)")
+    a3.plot(detail.index, detail["gamma_theta_approx"], color=INK_2, ls="--", lw=1.2,
+            label="Gamma-theta approximation")
+    a3.axhline(0, color=INK_2, lw=0.8)
+    a3.set_ylabel("P&L (index points)")
+    a3.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    return _save(fig, "delta_hedge_nifty.png")
+
+
+def plot_hedge_pnl_hist(results: dict[str, np.ndarray], premium: float):
+    fig, ax = plt.subplots(figsize=(8.5, 4.5))
+    allv = np.concatenate(list(results.values()))
+    bins = np.linspace(np.percentile(allv, 0.5), np.percentile(allv, 99.5), 70)
+    for i, (label, pnl) in enumerate(results.items()):
+        ax.hist(pnl, bins=bins, color=SERIES[i], alpha=0.55, label=f"{label} (sd {pnl.std():.2f})")
+    ax.axvline(0, color=INK, lw=0.8)
+    ax.set_xlabel(f"Hedging P&L at expiry per option (premium = {premium:.2f})")
+    ax.set_ylabel("Number of paths")
+    ax.set_title("Short call, delta-hedged: more frequent hedging = smaller error")
+    ax.legend(frameon=False, fontsize=9)
+    return _save(fig, "hedge_pnl_distribution.png")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 charts
+# ---------------------------------------------------------------------------
+def plot_pair_signals(bt: pd.DataFrame, y_name: str, x_name: str, entry: float, exit: float, tag: str):
+    fig, (a1, a2) = plt.subplots(2, 1, figsize=(10, 6.5), sharex=True,
+                                 gridspec_kw={"height_ratios": [1.2, 1.5]})
+    a1.plot(bt.index, bt["Y"] / bt["Y"].iloc[0] * 100, color=SERIES[0], label=y_name)
+    a1.plot(bt.index, bt["X"] / bt["X"].iloc[0] * 100, color=SERIES[1], label=x_name)
+    a1.set_ylabel("Price (rebased to 100)")
+    a1.legend(frameon=False, fontsize=9)
+    a1.set_title(f"Pairs trade {y_name} / {x_name} - spread z-score and positions ({tag})")
+    a2.plot(bt.index, bt["z"], color=INK_2, lw=1)
+    for lvl, ls in ((entry, "--"), (-entry, "--"), (exit, ":"), (-exit, ":")):
+        a2.axhline(lvl, color=INK_2, ls=ls, lw=0.9)
+    long_, short_ = bt["position"] > 0, bt["position"] < 0
+    a2.fill_between(bt.index, -4.5, 4.5, where=long_, color=SERIES[2], alpha=0.18, lw=0, label="Long spread")
+    a2.fill_between(bt.index, -4.5, 4.5, where=short_, color=SERIES[7], alpha=0.15, lw=0, label="Short spread")
+    a2.set_ylim(-4.5, 4.5)
+    a2.set_ylabel("Spread z-score")
+    a2.legend(frameon=False, fontsize=8, loc="lower left", ncol=2)
+    fig.tight_layout()
+    return _save(fig, f"pairs_signals_{tag}.png")
+
+
+def plot_equity_curves(curves: dict[str, pd.Series], title: str):
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    for i, (label, eq) in enumerate(curves.items()):
+        ax.plot(eq.index, eq.values, color=SERIES[i], label=f"{label}  (ends {eq.values[-1]:.2f})", lw=1.6)
+    ax.axhline(1, color=INK_2, lw=0.8)
+    ax.set_ylabel("Growth of Rs 1")
+    ax.set_title(title)
+    ax.legend(frameon=False, fontsize=9, loc="upper left")
+    return _save(fig, "pairs_equity_curves.png")

@@ -170,6 +170,50 @@ def load_data(refresh: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     return prices, rets
 
 
+# ---------------------------------------------------------------------------
+# 5. Option chain snapshot (for the implied-volatility smile)
+# ---------------------------------------------------------------------------
+def download_option_chain(ticker: str = config.OPTION_TICKER,
+                          target_days: int = config.OPTION_TARGET_DAYS) -> pd.DataFrame:
+    """Snapshot one expiry of a real option chain and cache it to CSV.
+
+    Yahoo has no NIFTY option chain, so we use SPY (S&P 500 ETF), the most
+    liquid options market in the world. It is a one-off snapshot: the IV
+    smile in the report is reproducible from the cached file.
+    """
+    import yfinance as yf
+
+    tk = yf.Ticker(ticker)
+    today = pd.Timestamp.now().normalize()
+    expiries = pd.to_datetime(pd.Series(tk.options))
+    expiry = expiries.iloc[(expiries - today - pd.Timedelta(days=target_days)).abs().argmin()]
+    chain = tk.option_chain(expiry.strftime("%Y-%m-%d"))
+    hist = tk.history(period="5d")["Close"]
+    spot = float(hist.iloc[-1])
+    quote_date = hist.index[-1].strftime("%Y-%m-%d")  # last close the quotes belong to
+
+    frames = []
+    for kind, df in (("call", chain.calls), ("put", chain.puts)):
+        df = df[["strike", "bid", "ask", "lastPrice", "volume", "openInterest", "impliedVolatility"]].copy()
+        df["type"] = kind
+        frames.append(df)
+    out = pd.concat(frames, ignore_index=True)
+    out["mid"] = (out["bid"] + out["ask"]) / 2
+    out["expiry"] = expiry.strftime("%Y-%m-%d")
+    out["spot"] = spot
+    out["quote_date"] = quote_date
+    out["fetched_at_utc"] = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M")
+    config.DATA_DIR.mkdir(exist_ok=True)
+    out.to_csv(config.OPTIONS_CSV, index=False)
+    return out
+
+
+def load_option_chain(refresh: bool = False) -> pd.DataFrame:
+    if refresh or not config.OPTIONS_CSV.exists():
+        return download_option_chain()
+    return pd.read_csv(config.OPTIONS_CSV)
+
+
 if __name__ == "__main__":
     prices, rets, rep = build_cache()
     print(f"Saved {config.PRICES_CSV.name}: {prices.shape}, {config.RETURNS_CSV.name}: {rets.shape}")

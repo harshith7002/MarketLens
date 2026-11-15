@@ -68,3 +68,35 @@ SEED = 42
 ROLLING_CORR_WINDOW = 60
 
 FIG_DIR = ROOT_DIR / "reports" / "figures"
+
+# ---------------------------------------------------------------------------
+# Phase 3 - options settings
+# ---------------------------------------------------------------------------
+OPTIONS_CSV = DATA_DIR / "spy_options.csv"
+OPTION_TICKER = "SPY"       # Yahoo has no NIFTY chain; SPY is the most liquid
+OPTION_TARGET_DAYS = 30     # pick the expiry closest to ~1 month out
+# ASSUMPTION: flat USD risk-free rate (~1-month T-bill) for discounting SPY
+# options. A 35-day option's price barely depends on it (rho is tiny).
+USD_RISK_FREE_RATE = 0.04
+
+# Textbook example used for Greeks, MC convergence and the hedge simulation.
+EXAMPLE_OPTION = dict(S=100.0, K=100.0, T=1.0, r=0.05, sigma=0.20)
+
+# Delta-hedge on the real NIFTY path: a 3-month ATM call sold at the start of
+# the last 63 trading days, priced/hedged with the trailing 1-year realised vol.
+HEDGE_DAYS = 63
+
+# ---------------------------------------------------------------------------
+# Phase 4 - pairs trading settings
+# These are standard textbook defaults, fixed BEFORE looking at results
+# (not optimised - optimising them on the same data would be overfitting).
+# ---------------------------------------------------------------------------
+PAIR = ("HDFCBANK", "ICICIBANK")   # (Y, X): spread = ln Y - beta * ln X
+FORMATION_DAYS = 500         # first ~2 years: used only for the cointegration test
+BETA_WINDOW = 250            # rolling window for the hedge ratio (OLS)
+Z_WINDOW = 60                # rolling window for the spread's mean / std
+Z_ENTRY = 2.0                # open when |z| > 2
+Z_EXIT = 0.5                 # close when |z| < 0.5
+Z_STOP = 4.0                 # stop-loss: close if |z| > 4 (the relationship may have broken)
+EXEC_LAG = 1                 # signal at close t, trade at close t+1 (conservative)
+COST_BPS = 10                # cost per unit of turnover, per leg (brokerage+STT+slippage)
