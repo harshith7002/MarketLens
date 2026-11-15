@@ -2,11 +2,12 @@
 
 Run:  streamlit run app.py
 
-Four tabs, each a thin UI over the tested library code in marketlens/:
-  Risk           -> marketlens.risk      (metrics, correlation)
-  VaR            -> marketlens.risk      (VaR / ES, backtest, Kupiec)
-  Options        -> marketlens.options   (Black-Scholes, Greeks, MC, IV, hedging)
-  Pairs Trading  -> marketlens.strategy  (cointegration, z-score backtest)
+Five tabs, each a thin UI over the tested library code in marketlens/:
+  Risk           -> marketlens.risk          (metrics, correlation)
+  VaR            -> marketlens.risk          (VaR / ES, backtest, Kupiec)
+  Options        -> marketlens.options       (Black-Scholes, Greeks, MC, IV, hedging)
+  Pairs Trading  -> marketlens.strategy      (cointegration, z-score backtest)
+  Rates & Credit -> marketlens.fixed_income  (bonds, Treasury curve, DV01 scenarios, CDS)
 The app does no maths of its own, so what you see is what the tests check.
 """
 
@@ -19,7 +20,8 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from marketlens import config, options, risk, strategy
-from marketlens.data import load_data, load_option_chain
+from marketlens import fixed_income as fi
+from marketlens.data import load_data, load_fred, load_option_chain
 
 st.set_page_config(page_title="MarketLens", page_icon="📈", layout="wide")
 
@@ -28,6 +30,9 @@ SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#62
 GREY = "#8a8985"
 LAYOUT = dict(margin=dict(l=10, r=10, t=75, b=10), hovermode="x unified",  # room for title + legend
               legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
+# Two-panel figures carry panel titles at the top, so their legend goes underneath instead
+SUBPLOT_LAYOUT = dict(margin=dict(l=10, r=10, t=40, b=10), hovermode="closest",
+                      legend=dict(orientation="h", yanchor="top", y=-0.22, x=0))
 
 
 def pct(x, d=2):
@@ -67,13 +72,27 @@ def get_hedge_sim(sig_true, sig_hedge, step, cost, n_paths, days, mu):
     return options.delta_hedge(paths[::step], 100, T, 0.05, sig_hedge, cost_bps=cost)
 
 
+@st.cache_data
+def get_fred():
+    return load_fred()
+
+
+@st.cache_data(show_spinner="Re-bootstrapping the curve for every key rate...")
+def get_rates_risk(mats: tuple, pars: tuple, book_name: str):
+    m, p = np.array(mats), np.array(pars)
+    pos = fi.example_books(m, p)[book_name]
+    return (fi.portfolio_value(fi.bootstrap(m, p), pos), fi.portfolio_dv01(m, p, pos),
+            fi.key_rate_dv01(m, p, pos), pos)
+
+
 prices, rets = get_data()
 st.title("MarketLens — Markets Risk & Pricing Toolkit")
 st.caption(f"Daily data from Yahoo Finance, {prices.index[0]:%d %b %Y} – {prices.index[-1]:%d %b %Y}, "
            f"{len(prices):,} NSE trading days, cached locally. Every number below is computed live by the "
            "`marketlens` package.")
 
-tab_risk, tab_var, tab_opt, tab_pairs = st.tabs(["Risk", "VaR", "Options", "Pairs Trading"])
+tab_risk, tab_var, tab_opt, tab_pairs, tab_fi = st.tabs(
+    ["Risk", "VaR", "Options", "Pairs Trading", "Rates & Credit"])
 
 # ===========================================================================
 # RISK
@@ -387,3 +406,179 @@ with tab_pairs:
         with st.expander(f"Trade log ({len(trades)} trades)"):
             st.dataframe(trades.style.format({"return": pct, "entry": "{:%Y-%m-%d}", "exit": "{:%Y-%m-%d}"}),
                          hide_index=True)
+
+# ===========================================================================
+# RATES & CREDIT
+# ===========================================================================
+with tab_fi:
+    fred = get_fred()
+    ust_dates = fred.dropna(subset=list(config.UST_SERIES)).index
+    credit_dates = fred.dropna().index
+
+    # --- 1. Bond calculator -------------------------------------------------
+    st.subheader("Bond calculator: price, yield, duration, convexity, DV01")
+    b = st.columns(5)
+    cpn = b[0].number_input("Coupon (%)", 0.0, 20.0, 7.0, 0.125) / 100
+    mat = b[1].number_input("Maturity (years)", 0.5, 50.0, 10.0, 0.5)
+    yld = b[2].number_input("Yield to maturity (%)", -1.0, 30.0, 7.0, 0.05) / 100
+    shift_bp = b[3].slider("Yield shock (bp)", -300, 300, 100, 25)
+    px_in = b[4].number_input("Price to solve YTM from", 1.0, 300.0, 96.5, 0.25)
+    px = fi.bond_price(yld, cpn, mat)
+    k = st.columns(6)
+    k[0].metric("Bond price", f"{px:.4f}")
+    k[1].metric("Macaulay duration", f"{fi.macaulay_duration(yld, cpn, mat):.3f} yrs")
+    k[2].metric("Modified duration", f"{fi.modified_duration(yld, cpn, mat):.3f}")
+    k[3].metric("Convexity", f"{fi.convexity(yld, cpn, mat):.2f}")
+    k[4].metric("DV01 / 100 face", f"{fi.dv01(yld, cpn, mat):.4f}")
+    r = fi.ytm(px_in, cpn, mat)
+    k[5].metric(f"YTM at price {px_in:g}", pct(r.ytm, 4), f"{r.method}, {r.iterations} iters",
+                delta_color="off", delta_arrow="off")
+
+    a = fi.price_change_approx(yld, shift_bp * fi.BP, cpn, mat)
+    c1, c2 = st.columns([1, 1.6])
+    with c1:
+        st.markdown(f"**{shift_bp:+d} bp shock: estimate vs exact**")
+        approx_tbl = pd.DataFrame({
+            "Price change": [a["exact_pct"], a["duration_pct"], a["duration_convexity_pct"]],
+            "Error (pp of price)": [0.0, a["error_duration_pct"] * 100, a["error_dur_cx_pct"] * 100]},
+            index=["Exact repricing", "Duration only", "Duration + convexity"])
+        st.dataframe(approx_tbl.style.format({"Price change": lambda v: pct(v, 3),
+                                              "Error (pp of price)": "{:+.4f}"}))
+        st.caption("Duration is the tangent line; convexity adds the curvature. Duration alone always "
+                   "under-estimates the price, so its error is negative both ways.")
+    with c2:
+        ys = np.linspace(yld - 0.04, yld + 0.04, 161)
+        dm, cx = fi.modified_duration(yld, cpn, mat), fi.convexity(yld, cpn, mat)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=ys * 100, y=[fi.bond_price(v, cpn, mat) for v in ys], name="Exact price",
+                                 line=dict(color=SERIES[0], width=2.5)))
+        fig.add_trace(go.Scatter(x=ys * 100, y=px * (1 - dm * (ys - yld)), name="Duration only",
+                                 line=dict(color=SERIES[1], dash="dash")))
+        fig.add_trace(go.Scatter(x=ys * 100, y=px * (1 - dm * (ys - yld) + 0.5 * cx * (ys - yld) ** 2),
+                                 name="Duration + convexity", line=dict(color=SERIES[2], dash="dot", width=2.5)))
+        fig.add_vline(x=(yld + shift_bp * fi.BP) * 100, line=dict(color=GREY, dash="dot"))
+        fig.update_layout(title="Price-yield curve", xaxis_title="Yield (%)", yaxis_title="Price per 100",
+                          height=340, **LAYOUT)
+        st.plotly_chart(fig)
+
+    # --- 2. Treasury curve ----------------------------------------------------
+    st.subheader("US Treasury curve (FRED): bootstrapped zero rates and forwards")
+    g1, g2 = st.columns([1, 3])
+    with g1:
+        day = st.select_slider("Curve date", options=list(ust_dates), value=credit_dates[-1],
+                               format_func=lambda d: f"{d:%d %b %Y}")
+        method = st.radio("Par-yield interpolation", ["linear", "cubic"], horizontal=True, key="interp")
+    mats, pars = fi.par_curve(fred.loc[day])
+    curve = fi.bootstrap(mats, pars, method)
+    with g1:
+        fw = {"1y1y": curve.forward(1, 2), "2y1y": curve.forward(2, 3), "5y5y": curve.forward(5, 10),
+              "10y10y": curve.forward(10, 20)}
+        st.dataframe(pd.DataFrame({"Forward rate": fw}).style.format(lambda v: pct(v, 3)))
+        slope = (pars[list(mats).index(10)] - pars[list(mats).index(2)]) * 1e4
+        st.caption(f"2s10s slope: {slope:+.0f} bp. Forwards are continuously compounded.")
+    with g2:
+        t = np.linspace(0.1, 30, 300)
+        t0 = np.arange(0, 29.5 + 1e-9, 0.5)
+        fig = make_subplots(rows=1, cols=2, subplot_titles=["Par yields and zero curve", "6-month forward rates"])
+        fig.add_trace(go.Scatter(x=mats, y=pars * 100, mode="markers", name="Quoted par yields",
+                                 marker=dict(color="#0b0b0b", size=8)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=t, y=curve.zero(t, "semi") * 100, name=f"Zero curve ({method})",
+                                 line=dict(color=SERIES[0], width=2)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=t0 + 0.5, y=curve.forward(t0, t0 + 0.5) * 100, name="6m forwards",
+                                 line=dict(color=SERIES[1], width=2, shape="vh")), row=1, col=2)
+        fig.update_xaxes(title_text="Maturity (years)")
+        fig.update_yaxes(title_text="Rate (%)", row=1, col=1)
+        fig.update_layout(height=400, **SUBPLOT_LAYOUT)
+        st.plotly_chart(fig)
+
+    # --- 3. Rates risk --------------------------------------------------------
+    st.subheader(f"Rates risk on the {day:%d %b %Y} curve")
+    books = fi.example_books(mats, pars)
+    h1, h2 = st.columns([1, 2.4])
+    with h1:
+        book_name = st.radio("Book", list(books), key="book")
+        st.markdown("**Custom scenario** (par-yield shifts, linear in between)")
+        s_short = st.slider("Short end, 2y and below (bp)", -200, 200, -25, 5)
+        s_long = st.slider("Long end, 10y and above (bp)", -200, 200, 25, 5)
+    value, dv, krd, pos = get_rates_risk(tuple(mats), tuple(pars), book_name)
+    custom = s_short + np.clip((mats - 2) / 8, 0, 1) * (s_long - s_short)
+    base_curve = fi.bootstrap(mats, pars)
+    scen = {**fi.scenario_shifts(mats), "Custom": custom}
+    rows = []
+    for name, sh in scen.items():
+        full = fi.portfolio_value(fi.shifted_curve(mats, pars, sh), pos) - value
+        rows.append({"Scenario": name, "Full revaluation P&L": full,
+                     "Key-rate DV01 estimate": -float(np.sum(krd * sh))})
+    with h2:
+        m = st.columns(3)
+        m[0].metric("Market value", f"${value:,.0f}")
+        m[1].metric("Parallel DV01", f"${dv:,.0f} / bp")
+        m[2].metric("Custom scenario P&L", f"${rows[-1]['Full revaluation P&L']:,.0f}")
+        pos_tbl = pd.DataFrame([{"Position": ("Long " if p.face > 0 else "Short ") + p.name,
+                                 "Face": p.face, "Coupon": p.coupon,
+                                 "Price": fi.price_on_curve(base_curve, p.coupon, p.maturity)} for p in pos])
+        st.dataframe(pos_tbl.style.format({"Face": "{:,.0f}", "Coupon": lambda v: pct(v, 3), "Price": "{:.4f}"}),
+                     hide_index=True)
+        st.dataframe(pd.DataFrame(rows).style.format({"Full revaluation P&L": "${:,.0f}",
+                                                      "Key-rate DV01 estimate": "${:,.0f}"}), hide_index=True)
+    labels = [f"{x:g}y" if x >= 1 else f"{round(x * 12)}m" for x in mats]
+    fig = make_subplots(rows=1, cols=2, subplot_titles=["Key-rate DV01 ($ per bp)", "Scenario shift applied (bp)"])
+    fig.add_trace(go.Bar(x=labels, y=krd, marker_color=SERIES[0], name="Key-rate DV01"), row=1, col=1)
+    for i, (name, sh) in enumerate(scen.items()):
+        fig.add_trace(go.Scatter(x=labels, y=sh, mode="lines+markers", name=name,
+                                 line=dict(color=SERIES[(i + 1) % len(SERIES)], width=2)), row=1, col=2)
+    fig.update_layout(height=400, **SUBPLOT_LAYOUT)
+    st.plotly_chart(fig)
+    st.caption("Book B has almost zero parallel DV01 but large opposite key-rate exposures: hedged against "
+               "parallel moves, fully exposed to the shape of the curve.")
+
+    # --- 4. Credit ------------------------------------------------------------
+    cday = credit_dates[credit_dates <= day][-1] if (credit_dates <= day).any() else credit_dates[0]
+    st.subheader(f"Credit: spreads, default probabilities and CDS ({cday:%d %b %Y})")
+    ccurve = fi.bootstrap(*fi.par_curve(fred.loc[cday]))
+    q1, q2 = st.columns([1, 2.4])
+    with q1:
+        idx = st.radio("Spread source (ICE BofA OAS via FRED)",
+                       list(config.CREDIT_SERIES.values()) + ["Custom"], index=1, key="credit_idx")
+        if idx == "Custom":
+            spread = st.slider("Custom spread (bp)", 10, 1500, 250, 10) / 1e4
+        else:
+            sid = {v: key for key, v in config.CREDIT_SERIES.items()}[idx]
+            spread = float(fred.loc[cday, sid]) / 100
+        R = st.slider("Recovery rate R (%)", 0, 80, int(config.RECOVERY_RATE * 100), 5) / 100
+        cds_mat = st.select_slider("CDS maturity (years)", [1, 3, 5, 7, 10], value=5)
+        std_cpn = st.radio("Standard CDS coupon", [100, 500], horizontal=True,
+                           format_func=lambda v: f"{v} bp") / 1e4
+    notional = 10_000_000
+    lam = fi.hazard_from_spread(spread, R)
+    legs = fi.cds_legs(ccurve, lam, R, cds_mat)
+    with q2:
+        m = st.columns(5)
+        m[0].metric("Spread", f"{spread * 1e4:.0f} bp")
+        m[1].metric("Hazard rate (s / (1-R))", pct(lam))
+        m[2].metric(f"{cds_mat}y default prob.", pct(legs["default_prob"]))
+        m[3].metric("CDS par spread", f"{legs['par_spread'] * 1e4:.2f} bp",
+                    f"lambda(1-R) = {lam * (1 - R) * 1e4:.2f} bp", delta_color="off", delta_arrow="off")
+        up = fi.cds_mtm(std_cpn, legs) * notional
+        m[4].metric("Upfront on $10M", f"${abs(up):,.0f}", "buyer pays" if up > 0 else "buyer receives",
+                    delta_color="off", delta_arrow="off")
+        st.caption(f"Premium leg = s x RPV01 (RPV01 {legs['rpv01']:.4f}); protection leg = "
+                   f"{legs['protection_leg']:.5f} per 1 notional. Upfront = (par - coupon) x RPV01.")
+        bc = round((ccurve.par_yield(5) + spread) * 800) / 800
+        grid = np.linspace(0, max(600, spread * 1e4 * 1.6), 121)
+        fig = make_subplots(rows=1, cols=2, subplot_titles=["Survival probability Q(t) = exp(-lambda t)",
+                                                            f"5y {bc:.3%} bond: price vs spread"])
+        tt = np.linspace(0, 10, 101)
+        fig.add_trace(go.Scatter(x=tt, y=fi.survival(tt, lam) * 100, name="Survival %",
+                                 line=dict(color=SERIES[0], width=2.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=grid, y=[fi.price_on_curve(ccurve, bc, 5, spread=g / 1e4) for g in grid],
+                                 name="Bond price", line=dict(color=SERIES[1], width=2.5)), row=1, col=2)
+        fig.add_trace(go.Scatter(x=[spread * 1e4], y=[fi.price_on_curve(ccurve, bc, 5, spread=spread)],
+                                 mode="markers", name="Current spread", marker=dict(color=SERIES[7], size=11)),
+                      row=1, col=2)
+        fig.update_xaxes(title_text="Years", row=1, col=1)
+        fig.update_xaxes(title_text="Z-spread (bp)", row=1, col=2)
+        fig.update_layout(height=380, **SUBPLOT_LAYOUT)
+        st.plotly_chart(fig)
+    st.caption(f"Assumptions: constant hazard rate, recovery {R:.0%}, CDS discounted on the Treasury curve "
+               "(real CDS use SOFR), bond OAS used as a proxy for CDS spreads (ignores the CDS-bond basis).")

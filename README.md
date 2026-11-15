@@ -1,8 +1,8 @@
 # MarketLens: Markets Risk & Pricing Toolkit
 
-A Python, Excel and VBA toolkit covering the core quantitative work of a markets desk: **risk measurement (VaR/ES), derivatives pricing and hedging, and a statistical-arbitrage strategy**. It runs on five years of real Indian market data (NIFTY 50, five NSE large caps, USD/INR, gold) and a real US option chain.
+A Python, Excel and VBA toolkit covering the core quantitative work of a markets desk: **risk measurement (VaR/ES), derivatives pricing and hedging, a statistical-arbitrage strategy, and rates & credit (bond analytics, the Treasury yield curve, DV01 scenarios and CDS pricing)**. It runs on five years of real Indian market data (NIFTY 50, five NSE large caps, USD/INR, gold), a real US option chain, and real US Treasury yields and corporate credit spreads from FRED.
 
-Every number in this README was produced by the code in this repo, from the cached data in `data/`, and is reproducible offline. 77 automated tests check the maths.
+Every number in this README was produced by the code in this repo, from the cached data in `data/`, and is reproducible offline. 135 automated tests check the maths.
 
 ![VaR dashboard](docs/screenshots/dashboard_var.png)
 
@@ -24,11 +24,12 @@ Every number in this README was produced by the code in this repo, from the cach
 
 ## Problem
 
-A trading desk needs answers to three questions every day:
+A trading desk needs answers to four questions every day:
 
 1. **How much could we lose?** Measure portfolio risk (Value-at-Risk, Expected Shortfall), and check whether the risk model would have been right in the past.
 2. **What is this derivative worth, and how do we hedge it?** Price options, compute their sensitivities (Greeks), back out implied volatility from market prices, and test what delta hedging really costs.
 3. **Is there a trade?** Test a relative-value idea (pairs trading) honestly, out-of-sample, after transaction costs.
+4. **What are our rates and credit exposures?** Price bonds, build the yield curve, measure DV01 and how the book reacts to curve moves, and turn credit spreads into default probabilities and CDS prices.
 
 MarketLens implements each of these from first principles, validates them against theory and against each other, and presents them in a Streamlit dashboard and an Excel workbook with VBA.
 
@@ -41,6 +42,8 @@ MarketLens implements each of these from first principles, validates them agains
 | USD/INR | `INR=X` | Rupees per dollar (a rise means the rupee is weakening) |
 | Gold | `GC=F` | COMEX front-month future, USD |
 | SPY option chain | `SPY` | One expiry (2026-12-18), quotes from 2026-11-13. Used for the implied-volatility smile, because Yahoo has no NIFTY chain |
+| US Treasury par yields | FRED `DGS1MO` … `DGS30` | 11 maturities from 1 month to 30 years, daily, 15 Nov 2021 – 12 Nov 2026 (1,248 days) |
+| US corporate credit spreads | FRED `BAMLC0A0CM`, `BAMLC0A4CBBB`, `BAMLH0A0HYM2` | ICE BofA option-adjusted spreads: investment-grade, BBB, high-yield. FRED publishes about 3 years (from 14 Nov 2023) |
 
 - **Period:** 15 Nov 2021 to 13 Nov 2026. That is 1,235 NSE trading days and 1,234 daily log returns, with **0 NaNs**.
 - **Source:** free Yahoo Finance data via `yfinance` (`auto_adjust=True`, so prices are adjusted for splits, bonuses and dividends). Cached to CSV, so everything runs offline.
@@ -112,6 +115,47 @@ Here p = 1 − α is the expected breach rate, x the number of breaches and T th
   - The cointegration test uses only the first 2 years. All performance figures come from the following 3 years.
   - A test shocks future prices and checks that no past position changes.
 - **Costs:** 10 bp per leg on every change in weights. Capital = gross exposure.
+
+### 4. Rates & Credit (`marketlens/fixed_income.py`)
+
+**Bonds.** Semi-annual coupons, valued on a coupon date (no accrued interest), prices per 100 face.
+
+| Measure | Formula |
+|---|---|
+| Price from yield | P = Σ CFₖ / (1 + y/2)^(2tₖ) |
+| Yield-to-maturity | Newton: y ← y − (P(y) − price) / P′(y), with bisection fallback |
+| Macaulay duration | D_mac = Σ tₖ PVₖ / P (a zero-coupon bond's equals its maturity) |
+| Modified duration | D_mod = D_mac / (1 + y/2) = −(1/P) dP/dy |
+| Convexity | C = (1/P) d²P/dy² |
+| DV01 | D_mod · P · 0.0001, checked against a ±1 bp reprice |
+| Price-change estimate | ΔP/P ≈ −D_mod Δy + ½ C Δy² |
+
+**Yield curve.**
+- **Short end:** for bills (≤ 6 months), the par yield is already a zero rate.
+- **Interpolation:** par yields are interpolated every 6 months out to 30 years, linearly or with a natural cubic spline.
+- **Bootstrap:** at each maturity, solve for the one unknown discount factor: Dₙ = (1 − (c/2) Σᵢ₍ₙ Dᵢ) / (1 + c/2).
+- **Between nodes:** ln D is interpolated linearly, i.e. flat forward rates.
+- **Forward rates:** f(t₁, t₂) = ln(D(t₁)/D(t₂)) / (t₂ − t₁).
+
+**Rates risk.**
+- **Portfolio DV01:** shift the quoted par yields by ±1 bp, rebuild the curve and reprice every bond.
+- **Key-rate DV01:** the same, bumping one quoted maturity at a time.
+- **Scenarios:**
+  - Parallel ±100 bp.
+  - Steepener: the 2y–10y slope widens by 50 bp (short end −25 bp, long end +25 bp, linear in between).
+  - Flattener: the mirror image.
+- **Two P&L numbers per scenario:** full revaluation, and the linear key-rate-DV01 estimate.
+
+**Credit.**
+- **Z-spread:** a corporate bond is priced as P = Σ CFₖ D(tₖ) e^(−s tₖ). The spread s is solved from the price by Newton.
+- **CS01:** price change per 1 bp of spread.
+- **Hazard rate (the credit triangle):** λ = s / (1 − R), with recovery R = 40% (an assumption).
+- **Survival probability:** Q(t) = e^(−λt).
+- **CDS, valued per 1 of notional:**
+  - **Premium leg:** spread s × RPV01, where RPV01 = Σ Δᵢ D(tᵢ) Q(tᵢ) for quarterly payments, plus premium accrued up to default.
+  - **Protection leg:** (1 − R) × Σ D(u) [Q(u⁻) − Q(u)], summed over monthly sub-steps.
+  - **Par spread** = protection leg / RPV01.
+  - **Mark-to-market** for the protection buyer = (par spread − contract spread) × RPV01. That is also the upfront payment on a standard 100 bp or 500 bp coupon contract.
 
 ## Key results
 
@@ -216,6 +260,70 @@ The pair is **correlated (0.52) but not cointegrated** at 5% in any period. No p
 
 ![Pairs equity curves](reports/figures/pairs_equity_curves.png)
 
+### Rates & Credit
+
+**Bond analytics** (illustrative bonds, not market quotes: semi-annual coupons, 7.00% yield, roughly where 10-year Indian government bonds trade):
+
+| Bond | Price | Macaulay duration | Modified duration | Convexity | DV01 (per 100) |
+|---|---|---|---|---|---|
+| 2Y 7% | 100.00 | 1.90 | 1.84 | 4.4 | 0.0184 |
+| 10Y 7% | 100.00 | 7.35 | 7.11 | 64.3 | 0.0711 |
+| 10Y zero | 50.26 | **10.00** | 9.66 | 98.0 | 0.0486 |
+| 30Y 7% | 100.00 | 12.91 | 12.47 | 251.2 | 0.1247 |
+
+| ±100 bp shock | Exact | Duration only (error) | Duration + convexity (error) |
+|---|---|---|---|
+| 10Y 7%, +100 bp | −6.795% | −7.106% (−0.311 pp) | −6.785% (+0.011 pp) |
+| 10Y 7%, −100 bp | +7.439% | +7.106% (−0.333 pp) | +7.428% (−0.011 pp) |
+| 30Y 7%, +100 bp | −11.312% | −12.472% (−1.161 pp) | −11.216% (+0.096 pp) |
+| 30Y 7%, −100 bp | +13.838% | +12.472% (−1.365 pp) | +13.729% (−0.109 pp) |
+
+Adding convexity cuts the 10-year error about 30-fold. The yield solver reprices prices from 85 to 120 to 10 decimals in at most 5 Newton steps.
+
+**US Treasury curve, 12 Nov 2026** (FRED par yields):
+
+| Maturity | 1m | 2y | 5y | 10y | 20y | 30y |
+|---|---|---|---|---|---|---|
+| Par yield | 4.12% | 4.86% | 4.95% | 5.10% | 5.48% | 5.43% |
+| Zero rate (semi-annual) | 4.12% | 4.87% | 4.96% | 5.13% | 5.67% | 5.50% |
+
+- **Accuracy:** both curves reprice every quoted par bond to 100 within 4 × 10⁻¹⁴.
+- **Forward rates:** 1y1y 5.02%, 5y5y 5.23%, 10y10y 6.11%.
+- **Interpolation choice:** with linear interpolation, the 6-month forwards jump by up to **156 bp** between neighbours (a 6.77% spike at 20 years). With a cubic spline the largest jump is **46 bp**.
+- **2y–10y slope:** +110 bp (Nov 2021), −39 bp (Nov 2023, inverted), +24 bp now.
+
+![Yield curve](reports/figures/yield_curve.png)
+
+**Rates risk** (full revaluation; coupons = today's par yield rounded to 1/8%):
+
+| Book | DV01 | +100 bp | −100 bp | Steepener (2s10s +50 bp) | Flattener (2s10s −50 bp) |
+|---|---|---|---|---|---|
+| A: long $11M across 2y, 5y, 10y, 30y | $5,293/bp | −$502,564 | +$559,567 | −$42,747 | +$45,125 |
+| B: long $10M 10y, short $41.3M 2y (DV01-neutral) | **$6/bp** | +$25,675 | +$29,297 | **−$389,698** | **+$389,671** |
+
+- **Book A:** the DV01-only estimate for +100 bp is −$529,299. Full revaluation loses $26.7k less, thanks to convexity.
+- **Book B:** has almost no parallel DV01. But its key-rate DV01s are −$7,793/bp at 2y and +$7,794/bp at 10y, so it is a pure bet on the shape of the curve. It also gains under both parallel moves, because it is net long convexity.
+
+![Rates scenarios](reports/figures/rates_scenarios.png)
+
+**Credit, 12 Nov 2026** (ICE BofA spreads from FRED, recovery 40% assumed, 5-year CDS on the Treasury curve):
+
+| Index | Spread | Hazard λ | 1y default prob. | 5y default prob. | CDS par spread | λ(1−R) |
+|---|---|---|---|---|---|---|
+| US investment-grade | 89 bp | 1.48% | 1.47% | 7.15% | 89.55 bp | 89.00 bp |
+| US BBB | 111 bp | 1.85% | 1.83% | 8.84% | 111.68 bp | 111.00 bp |
+| US high-yield | 320 bp | 5.33% | 5.19% | 23.41% | 321.96 bp | 320.00 bp |
+
+- **CDS vs the credit triangle:** the CDS par spread is 0.5–2 bp above λ(1−R). Premiums are paid quarterly in arrears, while protection pays at default; a test shows the gap shrinks as payments become more frequent.
+- **Spread history (3 years):** BBB ranged 0.92%–1.52% and high-yield 2.59%–4.61% (peak on 7 Apr 2025).
+- **Upfront payments, on $10M of 5-year protection:** BBB at the standard 100 bp coupon costs the buyer **$49,355**. High-yield at the 500 bp coupon pays the buyer **$693,824**. A 50 bp BBB widening gains a protection buyer **$208,436**.
+- **5-year BBB corporate bond (6.00% coupon):**
+  - **Price by spread:** 104.61 with zero spread, **99.62 at the BBB spread**, 95.35 at +100 bp, 90.92 at the high-yield spread.
+  - **CS01:** 0.0437 per 100 face.
+  - **Round trip:** the spread solved back from the price is 111.0000 bp.
+
+![Credit](reports/figures/credit_spread_price.png)
+
 ## Excel and VBA
 
 `python -m marketlens.excel_export` writes **`reports/MarketLens.xlsx`**, an 8-sheet workbook:
@@ -243,11 +351,17 @@ Step-by-step `.xlsm` setup: [`vba/README_VBA.md`](vba/README_VBA.md).
 
 ## Dashboard
 
-`streamlit run app.py` opens four tabs: **Risk, VaR, Options, Pairs Trading**. Every input is editable: portfolio weights, VaR window, option parameters, hedging frequency, realised vs implied vol, pair selection and z-score thresholds. The app contains no maths of its own; it calls the same tested functions as the report scripts.
+`streamlit run app.py` opens five tabs: **Risk, VaR, Options, Pairs Trading, Rates & Credit**. Every input is editable: portfolio weights, VaR window, option parameters, hedging frequency, realised vs implied vol, pair selection and z-score thresholds. The Rates & Credit tab adds:
+- a bond calculator with a ±bp shock;
+- the Treasury curve on any date since 2021, with linear or cubic interpolation;
+- a custom short-end/long-end curve scenario for either book;
+- a CDS pricer driven by the live spread indices or a custom spread and recovery rate.
 
-| Risk | Options | Pairs |
-|---|---|---|
-| ![](docs/screenshots/dashboard_risk.png) | ![](docs/screenshots/dashboard_options.png) | ![](docs/screenshots/dashboard_pairs.png) |
+The app contains no maths of its own; it calls the same tested functions as the report scripts.
+
+| Risk | Options | Pairs | Rates & Credit |
+|---|---|---|---|
+| ![](docs/screenshots/dashboard_risk.png) | ![](docs/screenshots/dashboard_options.png) | ![](docs/screenshots/dashboard_pairs.png) | ![](docs/screenshots/dashboard_rates_credit.png) |
 
 ## How to run
 
@@ -262,12 +376,14 @@ pip install -r requirements.txt
 | Command | What it does |
 |---|---|
 | `python -m marketlens.data` | Re-download prices (optional; the cached CSVs already ship with the repo) |
+| `python -c "from marketlens.data import download_fred; download_fred()"` | Re-download Treasury yields and credit spreads from FRED (optional) |
 | `python scripts/run_risk.py` | Phase 2 tables and charts → `reports/` |
 | `python scripts/run_options.py` | Phase 3 tables and charts |
 | `python scripts/run_strategy.py` | Phase 4 tables and charts |
+| `python scripts/run_fixed_income.py` | Rates & Credit tables and charts |
 | `python -m marketlens.excel_export` | Builds `reports/MarketLens.xlsx` |
 | `streamlit run app.py` | Starts the dashboard at http://localhost:8501 |
-| `pytest -q` | Runs all 77 tests (~20 s) |
+| `pytest -q` | Runs all 135 tests (~20 s) |
 | `python scripts/take_screenshots.py` | Regenerates the README screenshots (needs `pip install playwright` and Edge or Chrome) |
 
 Requires Python 3.11+. Uses no paid APIs.
@@ -276,26 +392,27 @@ Requires Python 3.11+. Uses no paid APIs.
 
 ```
 MarketLens/
-├── app.py                    # Streamlit dashboard (4 tabs)
+├── app.py                    # Streamlit dashboard (5 tabs)
 ├── marketlens/
 │   ├── config.py             # every setting and assumption in one place
-│   ├── data.py               # download, clean, log returns, CSV cache, SPY chain
+│   ├── data.py               # download, clean, log returns, CSV cache, SPY chain, FRED rates
 │   ├── risk.py               # metrics, correlation, VaR/ES (3 methods), backtest, Kupiec
 │   ├── options.py            # Black-Scholes, Greeks, Monte Carlo, implied vol, delta hedging
 │   ├── strategy.py           # Engle-Granger, z-score signals, backtest, trade log
+│   ├── fixed_income.py       # bonds, YTM, duration/convexity, curve bootstrap, DV01, CDS
 │   ├── excel_export.py       # formatted Excel workbook
 │   └── plots.py              # matplotlib charts for reports/
 ├── vba/MarketLens.bas        # VBA functions + RefreshVaR macro (+ README_VBA.md)
-├── scripts/                  # run_risk.py, run_options.py, run_strategy.py, take_screenshots.py
-├── tests/                    # 77 pytest tests
-├── data/                     # cached prices, returns, SPY option chain
+├── scripts/                  # run_risk / run_options / run_strategy / run_fixed_income, take_screenshots
+├── tests/                    # 135 pytest tests
+├── data/                     # cached prices, returns, SPY option chain, FRED yields and spreads
 ├── reports/                  # result CSVs, MarketLens.xlsx, figures/
 └── docs/screenshots/         # dashboard screenshots
 ```
 
 ## Testing
 
-`pytest -q` runs 77 tests. They include the following:
+`pytest -q` runs 135 tests. They include the following:
 
 | Test | What it checks |
 |---|---|
@@ -310,8 +427,13 @@ MarketLens/
 | Hedging | P&L is unbiased for any drift; error scales as √(rebalancing frequency) |
 | Cointegration | Detects a synthetic cointegrated pair; rejects independent random walks |
 | Pairs bookkeeping | The trade log reconciles exactly with the equity curve |
+| Bond basics | **A zero-coupon bond's duration equals its maturity**; **price falls when yield rises** (81 yields, 4 bonds); a par bond prices at 100; convexity matches a second difference |
+| DV01 | **Formula DV01 matches a ±1 bp finite-difference bump**; curve DV01 equals yield DV01 on a flat curve; key-rate DV01s sum to the parallel DV01 |
+| Yield curve | Bootstrapped curve reprices every quoted par bond to 100; a flat par curve gives a flat zero curve; discount factors are positive and decreasing |
+| Scenarios | Long bonds lose when rates rise; convexity makes full revaluation beat DV01 both ways; steepener and flattener are mirror images |
+| CDS | **Par spread ≈ λ(1 − R)** within 1%; the gap shrinks with more frequent premiums; MTM is 0 at par and positive when spreads widen; z-spread round trip; price falls as spread widens |
 | Excel / VBA | Every cell the VBA reads is where the `.bas` expects it |
-| Dashboard | All four tabs render headlessly, and the numbers match the library |
+| Dashboard | All five tabs render headlessly, and the numbers match the library |
 
 ## Limitations
 
@@ -335,4 +457,12 @@ MarketLens/
   - Trades are assumed at closing prices with a flat cost.
   - 17 trades is a small sample.
   - The HDFC–HDFC Bank merger (July 2023) is a structural break.
+- **Rates & Credit:**
+  - The bond-analytics examples are illustrative inputs valued on a coupon date: no accrued interest, day counts or settlement lag.
+  - The Treasury curve uses constant-maturity *par* yields from FRED, not prices of actual bonds, so there's no on-the-run/off-the-run effect. Bills are treated as zero-coupon at their quoted yield.
+  - Linear par interpolation produces saw-tooth forward rates; the cubic spline is smoother but can overshoot (it peaks near 22 years). Production curves use monotone-convex or smoothing splines.
+  - Scenarios shift the par curve with simple shapes; real stress tests use historical or principal-component moves.
+  - Credit uses ICE BofA *bond index* spreads as a proxy for CDS spreads (ignoring the CDS–bond basis), a constant hazard rate, and an assumed 40% recovery.
+  - CDS legs are discounted on the Treasury curve; real CDS use SOFR (overnight) discounting and the ISDA standard model.
+  - Hazard rates implied from spreads are risk-neutral: they include a risk premium, so they run higher than historical default rates.
 - **Backtest honesty:** the strategy settings are textbook defaults that were never tuned. Optimising them on this same data would inflate the results.

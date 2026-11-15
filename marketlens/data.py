@@ -214,6 +214,44 @@ def load_option_chain(refresh: bool = False) -> pd.DataFrame:
     return pd.read_csv(config.OPTIONS_CSV)
 
 
+# ---------------------------------------------------------------------------
+# 6. FRED: US Treasury par yields and corporate credit spreads
+# ---------------------------------------------------------------------------
+def _fred_series(series_id: str, start: str, end: str, timeout: int = 60) -> pd.Series:
+    """One series from FRED's public CSV endpoint (no API key). Values in %."""
+    import io
+    import urllib.request
+
+    url = (f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+           f"&cosd={start}&coed={end}")
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        text = resp.read().decode("utf-8")
+    df = pd.read_csv(io.StringIO(text), parse_dates=["observation_date"], index_col="observation_date")
+    return pd.to_numeric(df[series_id], errors="coerce").rename(series_id)  # "." / blank = holiday
+
+
+def download_fred(start: str = config.FRED_START, end: str = config.FRED_END) -> pd.DataFrame:
+    """Treasury par yields + ICE BofA corporate OAS, cached to data/fred_rates.csv (values in %).
+
+    Rows where Treasuries were not published (US bond-market holidays) are
+    dropped. Credit indices on FRED only go back ~3 years, so they are NaN
+    before that - fine, we only use recent dates for credit.
+    """
+    ids = list(config.UST_SERIES) + list(config.CREDIT_SERIES)
+    df = pd.concat([_fred_series(s, start, end) for s in ids], axis=1)
+    df = df.dropna(subset=list(config.UST_SERIES), how="any")
+    df.index.name = "Date"
+    config.DATA_DIR.mkdir(exist_ok=True)
+    df.to_csv(config.FRED_CSV, float_format="%.4f")
+    return df
+
+
+def load_fred(refresh: bool = False) -> pd.DataFrame:
+    if refresh or not config.FRED_CSV.exists():
+        return download_fred()
+    return pd.read_csv(config.FRED_CSV, index_col="Date", parse_dates=True)
+
+
 if __name__ == "__main__":
     prices, rets, rep = build_cache()
     print(f"Saved {config.PRICES_CSV.name}: {prices.shape}, {config.RETURNS_CSV.name}: {rets.shape}")

@@ -100,3 +100,16 @@ Z_EXIT = 0.5                 # close when |z| < 0.5
 Z_STOP = 4.0                 # stop-loss: close if |z| > 4 (the relationship may have broken)
 EXEC_LAG = 1                 # signal at close t, trade at close t+1 (conservative)
 COST_BPS = 10                # cost per unit of turnover, per leg (brokerage+STT+slippage)
+
+# ---------------------------------------------------------------------------
+# Rates & Credit - FRED data (free CSV endpoint, no API key)
+# ---------------------------------------------------------------------------
+FRED_CSV = DATA_DIR / "fred_rates.csv"
+# US Treasury constant-maturity PAR yields, % (bond-equivalent, semi-annual)
+UST_SERIES = {"DGS1MO": 1 / 12, "DGS3MO": 0.25, "DGS6MO": 0.5, "DGS1": 1, "DGS2": 2, "DGS3": 3,
+              "DGS5": 5, "DGS7": 7, "DGS10": 10, "DGS20": 20, "DGS30": 30}
+# ICE BofA US corporate option-adjusted spreads over Treasuries, %
+CREDIT_SERIES = {"BAMLC0A0CM": "US IG (all)", "BAMLC0A4CBBB": "US BBB", "BAMLH0A0HYM2": "US High Yield"}
+FRED_START = "2021-11-15"
+FRED_END = "2026-11-13"      # same end date as the equity data
+RECOVERY_RATE = 0.40         # ASSUMPTION: market-standard senior unsecured recovery for CDS

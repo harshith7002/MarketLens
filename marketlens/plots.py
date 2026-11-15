@@ -244,3 +244,87 @@ def plot_price_yield(y0: float, coupon: float, maturity: float, freq: int, price
     a2.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     return _save(fig, "bond_price_yield.png")
+
+
+def plot_yield_curve(mats, pars, curves: dict, history: dict[str, tuple], as_of: str):
+    """Left: quoted par yields + bootstrapped zero curves. Middle: 6-month forward rates
+    (linear vs cubic interpolation). Right: par curves on earlier dates."""
+    t = np.linspace(0.25, 30, 300)
+    fig, (a1, a2, a3) = plt.subplots(1, 3, figsize=(16, 4.6))
+    a1.scatter(mats, pars * 100, color=INK, s=28, zorder=5, label="Quoted par yields (FRED)")
+    for i, (lab, c) in enumerate(curves.items()):
+        a1.plot(t, c.zero(t, "semi") * 100, color=SERIES[i], lw=1.8, label=f"Zero curve ({lab})")
+    a1.set_xlabel("Maturity (years)")
+    a1.set_ylabel("Rate (%)")
+    a1.set_title(f"US Treasury curve, {as_of}")
+    a1.legend(frameon=False, fontsize=8)
+    t0 = np.arange(0, 29.5 + 1e-9, 0.5)
+    for i, (lab, c) in enumerate(curves.items()):
+        a2.step(t0 + 0.5, c.forward(t0, t0 + 0.5) * 100, where="pre", color=SERIES[i], lw=1.6,
+                label=f"6-month forwards ({lab})")
+    a2.set_xlabel("Forward start + 6m (years)")
+    a2.set_ylabel("Rate (%, cont. comp.)")
+    a2.set_title("Forward rates: interpolation choice matters")
+    a2.legend(frameon=False, fontsize=8)
+    for i, (lab, (m, p)) in enumerate(history.items()):
+        a3.plot(m, p * 100, "o-", color=SERIES[i], ms=4, lw=1.6, label=lab)
+    a3.set_xlabel("Maturity (years)")
+    a3.set_ylabel("Par yield (%)")
+    a3.set_title("How the curve has moved")
+    a3.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    return _save(fig, "yield_curve.png")
+
+
+def plot_rates_risk(mats, krd: dict[str, np.ndarray], scen: dict[str, list[dict]]):
+    """Left: key-rate DV01 by maturity for each book. Right: scenario P&L for each book."""
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(13, 4.6))
+    labels = [f"{m:g}y" if m >= 1 else f"{int(round(m * 12))}m" for m in mats]
+    x = np.arange(len(mats))
+    w = 0.38
+    for i, (book, v) in enumerate(krd.items()):
+        a1.bar(x + (i - 0.5) * w, v, width=w, color=SERIES[i], label=book)
+    a1.axhline(0, color=INK_2, lw=0.8)
+    a1.set_xticks(x, labels)
+    a1.set_ylabel("Key-rate DV01 ($ per 1 bp)")
+    a1.set_title("Where the rates risk sits")
+    a1.legend(frameon=False, fontsize=8)
+    names = [r["Scenario"] for r in next(iter(scen.values()))]
+    x2 = np.arange(len(names))
+    for i, (book, rows) in enumerate(scen.items()):
+        a2.barh(x2 + (i - 0.5) * w, [r["Full reval P&L"] / 1e3 for r in rows], height=w,
+                color=SERIES[i], label=book)
+    a2.axvline(0, color=INK_2, lw=0.8)
+    a2.set_yticks(x2, names)
+    a2.invert_yaxis()
+    a2.set_xlabel("P&L ($ thousands, full revaluation)")
+    a2.set_title("Scenario P&L")
+    a2.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    return _save(fig, "rates_scenarios.png")
+
+
+def plot_credit(hazards: dict[str, float], spreads_bp: np.ndarray, prices: np.ndarray,
+                marks: dict[str, tuple], bond_label: str):
+    """Left: survival probability curves. Right: corporate bond price vs credit spread."""
+    t = np.linspace(0, 10, 201)
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(13, 4.6))
+    for i, (lab, lam) in enumerate(hazards.items()):
+        q = np.exp(-lam * t)
+        a1.plot(t, q * 100, color=SERIES[i], lw=2, label=f"{lab} (lambda = {lam:.2%})")
+    a1.set_xlabel("Years")
+    a1.set_ylabel("Survival probability (%)")
+    a1.set_title("Q(t) = exp(-lambda t), lambda = spread / (1 - R), R = 40%")
+    a1.legend(frameon=False, fontsize=8)
+    a2.plot(spreads_bp, prices, color=SERIES[0], lw=2)
+    for i, (lab, (s, p)) in enumerate(marks.items()):
+        a2.scatter([s], [p], color=SERIES[i + 1], s=45, zorder=5, edgecolor=SURFACE, linewidth=1.5)
+        # alternate labels above-right / below-left so close points (IG vs BBB) don't collide
+        off = (8, 6) if i % 2 else (-12, -30)
+        a2.annotate(f"{lab}\n{s:.0f} bp -> {p:.2f}", (s, p), textcoords="offset points", xytext=off,
+                    fontsize=8, color=INK_2, ha="left" if i % 2 else "right")
+    a2.set_xlabel("Z-spread over Treasuries (bp)")
+    a2.set_ylabel("Price per 100 face")
+    a2.set_title(f"{bond_label}: wider spread = lower price")
+    fig.tight_layout()
+    return _save(fig, "credit_spread_price.png")

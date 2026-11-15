@@ -19,6 +19,7 @@ TABS = [  # (tab label, text that appears once the tab has rendered, file name)
     ("VaR", "Backtest: did the model", "dashboard_var.png"),
     ("Options", "Delta-hedging a short call", "dashboard_options.png"),
     ("Pairs Trading", "Engle-Granger on the formation period", "dashboard_pairs.png"),
+    ("Rates & Credit", "Credit: spreads, default probabilities", "dashboard_rates_credit.png"),
 ]
 
 
