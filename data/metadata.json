@@ -1,0 +1,46 @@
+{
+  "raw_rows": 1304,
+  "raw_missing": {
+    "NIFTY50": 69,
+    "RELIANCE": 68,
+    "TCS": 68,
+    "HDFCBANK": 68,
+    "INFY": 68,
+    "ICICIBANK": 68,
+    "USDINR": 4,
+    "GOLD": 46
+  },
+  "rows_on_anchor_calendar": 1235,
+  "missing_on_anchor_calendar": {
+    "NIFTY50": 0,
+    "RELIANCE": 0,
+    "TCS": 0,
+    "HDFCBANK": 0,
+    "INFY": 0,
+    "ICICIBANK": 0,
+    "USDINR": 4,
+    "GOLD": 40
+  },
+  "rows_dropped_incomplete": 0,
+  "clean_rows": 1235,
+  "first_date": "2021-11-15",
+  "last_date": "2026-11-13",
+  "return_rows": 1234,
+  "outliers": [],
+  "source": "Yahoo Finance via yfinance (auto_adjust=True)",
+  "tickers": {
+    "^NSEI": "NIFTY50",
+    "RELIANCE.NS": "RELIANCE",
+    "TCS.NS": "TCS",
+    "HDFCBANK.NS": "HDFCBANK",
+    "INFY.NS": "INFY",
+    "ICICIBANK.NS": "ICICIBANK",
+    "INR=X": "USDINR",
+    "GC=F": "GOLD"
+  },
+  "requested_range": [
+    "2021-11-15",
+    "2026-11-14"
+  ],
+  "downloaded_at_utc": "2026-11-15 19:18"
+}
